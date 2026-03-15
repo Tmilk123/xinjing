@@ -19,7 +19,6 @@ import argparse
 import json
 import random
 import sys
-import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -73,10 +72,17 @@ def assert_json_response(content_type: str, step: str) -> None:
     )
 
 
+def is_username_exists_error(status: int, data: dict[str, Any]) -> bool:
+    detail = str(data.get("detail", ""))
+    return status in (400, 409) and "username already exists" in detail.lower()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test register/login API against real backend.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend base URL")
+    parser.add_argument("--username", default="test001", help="Fixed username used for testing")
     parser.add_argument("--password", default="12345678", help="Password used for test register/login")
+    parser.add_argument("--phone", default=None, help="Phone used in register payload. Default is random.")
     parser.add_argument(
         "--omit-email",
         action="store_true",
@@ -92,11 +98,9 @@ def main() -> int:
     args = parser.parse_args()
 
     base_url = args.base_url.rstrip("/")
-    stamp = int(time.time())
-    rand = random.randint(1000, 9999)
-    username = f"auth_{stamp}_{rand}"
+    username = args.username
     email = f"{username}@example.com"
-    phone = f"13{random.randint(100000000, 999999999)}"
+    phone = args.phone or f"13{random.randint(100000000, 999999999)}"
 
     print(f"[INFO] Base URL: {base_url}")
     print(f"[INFO] Test user: username={username}, email={email}, phone={phone}")
@@ -126,16 +130,20 @@ def main() -> int:
     status, data, content_type = request_json("POST", f"{base_url}/api/v1/auth/register", payload=register_payload)
     print(f"[STEP] POST /api/v1/auth/register -> {status} {data}")
     assert_json_response(content_type, "POST /api/v1/auth/register")
-    assert_step(status == 201, f"register failed: {status} {data}")
-    assert_step(data.get("username") == username, f"register response mismatch: {data}")
-    if args.omit_email:
-        got_email = data.get("email", "")
-        assert_step(
-            got_email == f"{username}@xinjing.local",
-            f"auto generated email mismatch, got: {got_email}",
-        )
+    created_now = status == 201
+    if created_now:
+        assert_step(data.get("username") == username, f"register response mismatch: {data}")
+        if args.omit_email:
+            got_email = data.get("email", "")
+            assert_step(
+                got_email == f"{username}@xinjing.local",
+                f"auto generated email mismatch, got: {got_email}",
+            )
+        else:
+            assert_step(data.get("email") == email, f"register email mismatch: {data}")
     else:
-        assert_step(data.get("email") == email, f"register email mismatch: {data}")
+        assert_step(is_username_exists_error(status, data), f"register failed: {status} {data}")
+        print(f"[INFO] User {username} already exists, continue with login.")
 
     # 3) Login
     login_payload = {"username": username, "password": args.password}
