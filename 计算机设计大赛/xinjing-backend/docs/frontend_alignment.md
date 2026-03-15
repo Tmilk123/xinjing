@@ -43,26 +43,25 @@ Login payload example:
 
 ## 4) Report (ReportPage/Analytics)
 
-- List reports: `GET /api/v1/reports?user_id=...`
+- List reports: `GET /api/v1/reports` (returns current login user only)
 - Get report by session: `GET /api/v1/reports/by-session/{session_id}`
 - Get report detail: `GET /api/v1/reports/{report_id}`
 - Get frontend-ready report JSON: `GET /api/v1/reports/{report_id}/frontend`
 - Get recommendations: `GET /api/v1/reports/session/{session_id}/recommendations`
-- Get emergency alerts: `GET /api/v1/reports/alerts?user_id=...`
+- Get emergency alerts: `GET /api/v1/reports/alerts` (returns current login user only)
 
 ## 5) Mood Calendar (MoodCalendarPage)
 
 - Upsert day record: `PUT /api/v1/mood-calendar/{YYYY-MM-DD}`
-- List records: `GET /api/v1/mood-calendar?user_id=1&month=2026-03`
-- List all records: `GET /api/v1/mood-calendar?user_id=1`
-- Get one record: `GET /api/v1/mood-calendar/{YYYY-MM-DD}?user_id=1`
-- Delete one record: `DELETE /api/v1/mood-calendar/{YYYY-MM-DD}?user_id=1`
+- List records: `GET /api/v1/mood-calendar?month=2026-03` (returns current login user only)
+- List all records: `GET /api/v1/mood-calendar` (returns current login user only)
+- Get one record: `GET /api/v1/mood-calendar/{YYYY-MM-DD}` (current login user)
+- Delete one record: `DELETE /api/v1/mood-calendar/{YYYY-MM-DD}` (current login user)
 
 Mood calendar payload example:
 
 ```json
 {
-  "user_id": 1,
   "mood_key": "sunny",
   "diary_text": "今天状态不错",
   "weather_key": "sunny"
@@ -72,9 +71,9 @@ Mood calendar payload example:
 ## 6) Emotion Checkins and Trend Snapshots
 
 - Create checkin: `POST /api/v1/mood-calendar/checkins`
-- List checkins: `GET /api/v1/mood-calendar/checkins?user_id=1&limit=30`
+- List checkins: `GET /api/v1/mood-calendar/checkins?limit=30` (returns current login user only)
 - Upsert trend snapshot: `PUT /api/v1/mood-calendar/trends/{YYYY-MM-DD}`
-- List trend snapshots: `GET /api/v1/mood-calendar/trends?user_id=1&limit=90`
+- List trend snapshots: `GET /api/v1/mood-calendar/trends?limit=90` (returns current login user only)
 
 ## 7) Companion Chat (CompanionPage)
 

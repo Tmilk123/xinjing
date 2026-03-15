@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class MoodCalendarUpsertRequest(BaseModel):
-    user_id: int
+    user_id: Optional[int] = None
     mood_key: str = Field(pattern="^(sunny|partly|cloudy|rainy|stormy)$")
     diary_text: Optional[str] = Field(default=None, max_length=300)
     weather_key: Optional[str] = Field(default=None, max_length=20)
@@ -25,7 +25,7 @@ class MoodCalendarRecordOut(BaseModel):
 
 
 class EmotionCheckinCreateRequest(BaseModel):
-    user_id: int
+    user_id: Optional[int] = None
     mood_score: int = Field(ge=1, le=5)
     stress_score: int = Field(ge=1, le=5)
     sleep_score: int = Field(ge=1, le=5)
@@ -47,7 +47,7 @@ class EmotionCheckinOut(BaseModel):
 
 
 class TrendSnapshotUpsertRequest(BaseModel):
-    user_id: int
+    user_id: Optional[int] = None
     latest_risk_level: Optional[str] = None
     avg_mood_score: Optional[int] = Field(default=None, ge=1, le=5)
     avg_stress_score: Optional[int] = Field(default=None, ge=1, le=5)
