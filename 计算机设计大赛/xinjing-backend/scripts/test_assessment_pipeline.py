@@ -22,7 +22,6 @@ import argparse
 import json
 import random
 import sys
-import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -95,38 +94,35 @@ def assert_json_response(content_type: str, step: str) -> None:
     )
 
 
-def register_user(base_url: str, password: str) -> tuple[int, str]:
-    for _ in range(5):
-        stamp = int(time.time())
-        rand = random.randint(1000, 9999)
-        username = f"pipe_{stamp}_{rand}"
-        email = f"{username}@example.com"
-        phone = f"13{random.randint(100000000, 999999999)}"
-
-        payload = {
-            "username": username,
-            "email": email,
-            "phone": phone,
-            "password": password,
-            "confirm_password": password,
-            "nickname": "pipeline_tester",
-            "gender": "other",
-            "age_range": "25-34",
-        }
-        print(f"[JSON][REQ] POST /api/v1/auth/register {json.dumps(payload, ensure_ascii=False)}")
-        status, data, content_type = request_json("POST", f"{base_url}/api/v1/auth/register", payload=payload)
-        assert_json_response(content_type, "POST /api/v1/auth/register")
-        if status == 201 and "id" in data:
-            print(f"[STEP] register -> {status}, user_id={data['id']}, username={username}")
-            return int(data["id"]), username
-        if status in (400, 409):
-            continue
-        raise RuntimeError(f"register failed: {status} {data}")
-
-    raise RuntimeError("register failed after retries due to collisions")
+def is_username_exists_error(status: int, data: dict[str, Any]) -> bool:
+    detail = str(data.get("detail", ""))
+    return status in (400, 409) and "username already exists" in detail.lower()
 
 
-def login_user(base_url: str, username: str, password: str) -> str:
+def register_user(base_url: str, username: str, password: str) -> None:
+    phone = f"13{random.randint(100000000, 999999999)}"
+    payload = {
+        "username": username,
+        "phone": phone,
+        "password": password,
+        "confirm_password": password,
+        "nickname": "pipeline_tester",
+        "gender": "other",
+        "age_range": "25-34",
+    }
+    print(f"[JSON][REQ] POST /api/v1/auth/register {json.dumps(payload, ensure_ascii=False)}")
+    status, data, content_type = request_json("POST", f"{base_url}/api/v1/auth/register", payload=payload)
+    assert_json_response(content_type, "POST /api/v1/auth/register")
+    if status == 201:
+        print(f"[STEP] register -> {status}, username={username}")
+        return
+    if is_username_exists_error(status, data):
+        print(f"[INFO] User {username} already exists, continue with login.")
+        return
+    raise RuntimeError(f"register failed: {status} {data}")
+
+
+def login_user(base_url: str, username: str, password: str) -> tuple[str, int]:
     payload = {"username": username, "password": password}
     print(f"[JSON][REQ] POST /api/v1/auth/login {json.dumps(payload, ensure_ascii=False)}")
     status, data, content_type = request_json("POST", f"{base_url}/api/v1/auth/login", payload=payload)
@@ -134,8 +130,10 @@ def login_user(base_url: str, username: str, password: str) -> str:
     assert_step(status == 200, f"login failed: {status} {data}")
     token = data.get("access_token")
     assert_step(bool(token), f"login response missing access_token: {data}")
+    user_id = data.get("user", {}).get("id")
+    assert_step(user_id is not None, f"login response missing user.id: {data}")
     print(f"[STEP] login -> {status}, token_type={data.get('token_type')}")
-    return str(token)
+    return str(token), int(user_id)
 
 
 def simulate_multimodal_rows(session_id: int) -> dict[str, int]:
@@ -274,9 +272,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Simulate assessment + multimodal ingestion and validate DB rows.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend base URL")
     parser.add_argument("--template-code", default="phq9", choices=["phq9", "sds", "ais", "pss"])
-    parser.add_argument("--user-id", type=int, default=None, help="Existing user id. If omitted, a test user is registered.")
+    parser.add_argument("--username", default="test001", help="Fixed username used for testing.")
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        default=None,
+        help="Existing user id override. If omitted, use logged-in user's id.",
+    )
     parser.add_argument("--password", default="12345678", help="Password for auto-created test user")
-    parser.add_argument("--login-username", default=None, help="Login username when --user-id is provided.")
     args = parser.parse_args()
 
     base_url = args.base_url.rstrip("/")
@@ -290,16 +293,11 @@ def main() -> int:
     assert_json_response(content_type, "GET /api/v1/health/db")
     assert_step(status == 200 and health.get("status") == "ok", f"health/db failed: {status} {health}")
 
-    token: str | None = None
-    if args.user_id is None:
-        user_id, username = register_user(base_url=base_url, password=args.password)
-        token = login_user(base_url=base_url, username=username, password=args.password)
-    else:
-        user_id = args.user_id
-        if args.login_username:
-            token = login_user(base_url=base_url, username=args.login_username, password=args.password)
+    register_user(base_url=base_url, username=args.username, password=args.password)
+    token, login_user_id = login_user(base_url=base_url, username=args.username, password=args.password)
+    user_id = args.user_id if args.user_id is not None else login_user_id
 
-    print(f"[INFO] user_id={user_id}")
+    print(f"[INFO] username={args.username}, user_id={user_id}")
     auth_headers = {"Authorization": f"Bearer {token}"} if token else None
 
     create_payload = {
