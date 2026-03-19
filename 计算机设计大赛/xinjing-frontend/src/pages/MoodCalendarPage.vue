@@ -1,8 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth.js'
-import { moodCalendarDb } from '../services/db.js'
+import { api } from '../services/api.js'
 
 const router  = useRouter()
 const { userId } = useAuth()
@@ -30,39 +30,23 @@ const todayKey = fmtDate(today)
 // 内部格式：{ 'YYYY-MM-DD': { mood: 'sunny', diary: '...' } }
 const moodData = ref({})
 
-/** 从 db 加载当前用户的所有记录到 moodData */
-function loadFromDb() {
+/** 从后端加载当前用户的所有记录到 moodData */
+async function loadFromDb() {
   const uid = userId.value
   if (!uid) return
-  const rows = moodCalendarDb.findByUserId(uid)
-  const map  = {}
-  rows.forEach(r => { map[r.record_date] = { mood: r.mood_key, diary: r.diary_text || '' } })
-  moodData.value = map
+  try {
+    const rows = await api.get(`/mood-calendar?user_id=${uid}`)
+    const map  = {}
+    rows.forEach(r => { map[r.record_date] = { mood: r.mood_key, diary: r.diary_text || '' } })
+    moodData.value = map
+  } catch (e) {
+    console.error('加载情绪日历失败:', e)
+  }
 }
 
-onMounted(() => {
-  loadFromDb()
-
-  // 若当前用户没有任何记录，写入演示数据（仅首次）
-  if (Object.keys(moodData.value).length === 0 && userId.value) {
-    const dMoods   = ['sunny','sunny','partly','cloudy','rainy','partly','sunny','stormy','rainy','partly','sunny','sunny','partly','cloudy']
-    const dDiaries = [
-      '和朋友出去玩了，今天特别开心！','天气很好，完成了所有作业',
-      '有点疲惫，但状态还行','睡眠质量不太好，有点迷糊',
-      '考试没考好，有些沮丧','慢慢调整中，好多了',
-      '阳光真好，心情也跟着好起来了','突然很焦虑，不知道为什么',
-      '和家人视频通话，心情好多了','平凡的一天，挺好的',
-      '春天来了，花都开了','完成了一个很难的项目，开心',
-      '有点累，想好好休息一下','',
-    ]
-    for (let i = 14; i >= 1; i--) {
-      const d = new Date(today)
-      d.setDate(today.getDate() - i)
-      const date = fmtDate(d)
-      moodCalendarDb.upsert({ user_id: userId.value, record_date: date, mood_key: dMoods[14 - i], diary_text: dDiaries[14 - i] })
-    }
-    loadFromDb()
-  }
+onMounted(async () => {
+  await loadFromDb()
+  loadCheckins()
 
   // 初始化编辑区
   const rec = moodData.value[todayKey]
@@ -147,19 +131,96 @@ watch([currentYear, currentMonth], () => {
   }
 })
 
-function saveDayRecord() {
+async function saveDayRecord() {
   if (!editingMood.value || !userId.value) return
-  // 写入数据库
-  moodCalendarDb.upsert({
-    user_id:    userId.value,
-    record_date: selectedKey.value,
-    mood_key:   editingMood.value,
-    diary_text: editingDiary.value.trim(),
-  })
-  // 同步本地缓存
+  // 先乐观更新本地缓存（让 UI 立即响应）
   moodData.value[selectedKey.value] = {
     mood:  editingMood.value,
     diary: editingDiary.value.trim(),
+  }
+  // 异步同步到后端
+  try {
+    await api.put(`/mood-calendar/${selectedKey.value}`, {
+      user_id:    userId.value,
+      mood_key:   editingMood.value,
+      diary_text: editingDiary.value.trim(),
+    })
+  } catch (e) {
+    console.error('保存情绪记录失败:', e)
+  }
+}
+
+// ── 四维情绪打卡 ─────────────────────────────────────────
+const checkinDims = [
+  { key: 'mood_score',   label: '情绪状态', icon: '😊', activeCls: 'bg-amber-400' },
+  { key: 'stress_score', label: '压力水平', icon: '😰', activeCls: 'bg-rose-400' },
+  { key: 'sleep_score',  label: '睡眠质量', icon: '💤', activeCls: 'bg-indigo-400' },
+  { key: 'energy_score', label: '精力状态', icon: '⚡', activeCls: 'bg-green-400' },
+]
+
+const checkins         = ref([])
+const checkinDone      = ref(false)
+const checkinSubmitting = ref(false)
+const checkinForm      = reactive({ mood_score: 0, stress_score: 0, sleep_score: 0, energy_score: 0, note: '' })
+
+async function loadCheckins() {
+  if (!userId.value) return
+  try {
+    const rows = await api.get('/mood-calendar/checkins?limit=7')
+    checkins.value = rows
+    const todayStr = fmtDate(new Date())
+    const todayRec = rows.find(c => c.created_at?.slice(0, 10) === todayStr)
+    if (todayRec) {
+      Object.assign(checkinForm, {
+        mood_score:   todayRec.mood_score,
+        stress_score: todayRec.stress_score,
+        sleep_score:  todayRec.sleep_score,
+        energy_score: todayRec.energy_score,
+        note:         todayRec.note || '',
+      })
+      checkinDone.value = true
+    }
+  } catch { /* silent */ }
+}
+
+async function submitCheckin() {
+  const { mood_score, stress_score, sleep_score, energy_score, note } = checkinForm
+  if (!mood_score || !stress_score || !sleep_score || !energy_score) return
+  checkinSubmitting.value = true
+  try {
+    const row = await api.post('/mood-calendar/checkins', {
+      mood_score, stress_score, sleep_score, energy_score,
+      note: note.trim() || null,
+    })
+    const todayStr = fmtDate(new Date())
+    checkins.value = [row, ...checkins.value.filter(c => c.created_at?.slice(0, 10) !== todayStr).slice(0, 6)]
+    checkinDone.value = true
+    // 同步保存趋势快照
+    api.put(`/mood-calendar/trends/${todayStr}`, {
+      avg_mood_score:   mood_score,
+      avg_stress_score: stress_score,
+      avg_sleep_score:  sleep_score,
+    }).catch(() => {})
+  } catch (e) {
+    console.error('提交打卡失败:', e)
+  } finally {
+    checkinSubmitting.value = false
+  }
+}
+
+async function deleteRecord() {
+  const key = selectedKey.value
+  if (!key || !userId.value || !moodData.value[key]) return
+  // 乐观删除
+  const backup = moodData.value[key]
+  delete moodData.value[key]
+  moodData.value = { ...moodData.value }
+  try {
+    await api.delete(`/mood-calendar/${key}?user_id=${userId.value}`)
+  } catch (e) {
+    console.error('删除情绪记录失败:', e)
+    moodData.value[key] = backup
+    moodData.value = { ...moodData.value }
   }
 }
 
@@ -611,6 +672,12 @@ const visible = ref(false)
                 <div v-if="selectedRecord.diary" class="text-xs text-gray-500 mt-2 italic leading-relaxed">
                   "{{ selectedRecord.diary }}"
                 </div>
+                <button
+                  @click="deleteRecord"
+                  class="mt-4 px-4 py-1.5 rounded-xl text-xs text-red-400 border border-red-200 hover:bg-red-50 transition-colors"
+                >
+                  删除此记录
+                </button>
               </div>
               <div v-else class="text-center text-xs text-gray-300 py-2">这天没有记录</div>
 
@@ -656,6 +723,89 @@ const visible = ref(false)
               <!-- 饼图风格的总结 -->
               <div class="mt-4 pt-3 border-t border-gray-100 text-xs text-gray-400 text-center">
                 共记录 {{ monthStats.total }} 天 · 好状态占比 {{ monthStats.total > 0 ? Math.round(((monthStats.counts.sunny||0)+(monthStats.counts.partly||0))/monthStats.total*100) : 0 }}%
+              </div>
+            </div>
+
+            <!-- 四维情绪打卡 -->
+            <div
+              class="bg-white/90 backdrop-blur rounded-3xl shadow-md border border-white/80 p-5 transition-all duration-700 delay-350"
+              :class="visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'"
+            >
+              <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+                <span>💪</span> 今日四维打卡
+                <span
+                  v-if="checkinDone"
+                  class="ml-auto text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium"
+                >已打卡 ✓</span>
+              </h3>
+
+              <!-- 四个维度评分 -->
+              <div class="space-y-3 mb-4">
+                <div
+                  v-for="dim in checkinDims"
+                  :key="dim.key"
+                  class="flex items-center gap-2"
+                >
+                  <span class="text-base w-5 flex-shrink-0 leading-none">{{ dim.icon }}</span>
+                  <span class="text-[11px] text-gray-500 w-14 flex-shrink-0">{{ dim.label }}</span>
+                  <div class="flex gap-1.5 flex-1">
+                    <button
+                      v-for="n in 5"
+                      :key="n"
+                      @click="!checkinDone && (checkinForm[dim.key] = n)"
+                      :disabled="checkinDone"
+                      class="w-5 h-5 rounded-full transition-all duration-150 flex-shrink-0"
+                      :class="n <= checkinForm[dim.key] ? dim.activeCls : 'bg-gray-100 hover:bg-gray-200'"
+                    ></button>
+                  </div>
+                  <span class="text-[10px] text-gray-400 w-4 text-right flex-shrink-0">
+                    {{ checkinForm[dim.key] || '-' }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- 备注 -->
+              <textarea
+                v-if="!checkinDone"
+                v-model="checkinForm.note"
+                placeholder="今天有什么感受？（选填）"
+                rows="2"
+                maxlength="100"
+                class="w-full text-xs rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all placeholder-gray-300 mb-3"
+              ></textarea>
+
+              <!-- 提交按钮 -->
+              <button
+                v-if="!checkinDone"
+                @click="submitCheckin"
+                :disabled="!checkinForm.mood_score || !checkinForm.stress_score || !checkinForm.sleep_score || !checkinForm.energy_score || checkinSubmitting"
+                class="w-full py-2.5 rounded-xl text-sm font-semibold transition-all duration-200"
+                :class="checkinForm.mood_score && checkinForm.stress_score && checkinForm.sleep_score && checkinForm.energy_score && !checkinSubmitting
+                  ? 'bg-primary text-white hover:bg-primary/90 shadow-md shadow-primary/20'
+                  : 'bg-gray-100 text-gray-300 cursor-not-allowed'"
+              >
+                {{ checkinSubmitting ? '提交中…' : '提交打卡' }}
+              </button>
+
+              <!-- 近期记录 -->
+              <div v-if="checkins.length > 0" class="mt-4 pt-3 border-t border-gray-100">
+                <p class="text-[10px] text-gray-400 mb-2">近期记录</p>
+                <div class="space-y-1.5">
+                  <div
+                    v-for="c in checkins.slice(0, 5)"
+                    :key="c.id"
+                    class="flex items-center gap-2 text-[10px] text-gray-500 bg-gray-50 rounded-xl px-2.5 py-1.5"
+                  >
+                    <span class="text-gray-400 w-10 flex-shrink-0">{{ c.created_at?.slice(5, 10) }}</span>
+                    <div class="flex gap-2 flex-1">
+                      <span v-for="dim in checkinDims" :key="dim.key" class="flex items-center gap-0.5">
+                        <span class="leading-none">{{ dim.icon }}</span>
+                        <span class="font-medium text-gray-600">{{ c[dim.key] }}</span>
+                      </span>
+                    </div>
+                    <span v-if="c.note" class="text-gray-400 truncate max-w-[60px]" :title="c.note">{{ c.note }}</span>
+                  </div>
+                </div>
               </div>
             </div>
 

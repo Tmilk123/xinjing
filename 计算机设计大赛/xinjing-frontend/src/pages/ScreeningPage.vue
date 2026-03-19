@@ -1,8 +1,11 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuth } from '../composables/useAuth.js'
+import { api } from '../services/api.js'
 
 const router = useRouter()
+const { userId } = useAuth()
 
 // phase: intro | setup | recording | questionnaire | sos | done
 const phase = ref('intro')
@@ -15,6 +18,7 @@ let timer = null
 
 const sosTriggered = ref(false)
 const scoreResult = ref(null)
+const pendingReportId = ref(null)
 
 // ─── 量表选项 ──────────────────────────────────────────────────────────────
 const assessments = [
@@ -207,17 +211,9 @@ function selectAnswer(val) {
   }
 }
 
-function finishQuestionnaire() {
+async function finishQuestionnaire() {
   const result = calcScore()
   scoreResult.value = result
-  try {
-    localStorage.setItem('xj_screening_result', JSON.stringify({
-      type: selectedType.value,
-      ...result,
-      answers: answers.value,
-      date: new Date().toLocaleString('zh-CN'),
-    }))
-  } catch (_) {}
 
   const isSOS = selectedType.value === 'phq9' && (answers.value[8] ?? 0) > 0
   if (isSOS) {
@@ -225,6 +221,48 @@ function finishQuestionnaire() {
     phase.value = 'sos'
   } else {
     phase.value = 'done'
+  }
+
+  // 保存到 localStorage（本地备份）
+  const localRecord = {
+    type: selectedType.value,
+    ...result,
+    answers: answers.value,
+    date: new Date().toLocaleString('zh-CN'),
+  }
+  try { localStorage.setItem('xj_screening_result', JSON.stringify(localRecord)) } catch (_) {}
+
+  // 提交到后端
+  if (userId.value) {
+    try {
+      const session = await api.post('/evaluations/sessions', {
+        user_id: userId.value,
+        screening_type: selectedType.value,
+        used_modalities: [
+          ...(cameraActive.value ? ['face'] : []),
+          ...(micActive.value   ? ['voice'] : []),
+          'text',
+        ],
+      })
+      const answerPayload = answers.value.map((v, i) => ({
+        question_no: i + 1,
+        answer_value: v ?? 0,
+      }))
+      const submitted = await api.post(`/evaluations/sessions/${session.session_id}/submit`, {
+        template_code: selectedType.value,
+        answers: answerPayload,
+      })
+      pendingReportId.value = submitted.report_id
+      // 更新本地记录加上真实 report_id
+      try {
+        localStorage.setItem('xj_screening_result', JSON.stringify({
+          ...localRecord,
+          report_id: submitted.report_id,
+        }))
+      } catch (_) {}
+    } catch (e) {
+      console.error('提交后端失败，使用本地数据:', e)
+    }
   }
 }
 
@@ -274,7 +312,9 @@ function calcScore() {
   return            { total, max: 27, level: '重度抑郁',   color: '#dc2626', desc: '存在严重抑郁症状，请立即寻求专业心理医生帮助。', scale: 'PHQ-9' }
 }
 
-function goToReport() { router.push('/report/demo-001') }
+function goToReport() {
+  router.push(pendingReportId.value ? `/report/${pendingReportId.value}` : '/report/local')
+}
 
 onUnmounted(() => clearInterval(timer))
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`

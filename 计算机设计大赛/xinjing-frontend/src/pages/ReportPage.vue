@@ -1,15 +1,11 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { api } from '../services/api.js'
 
 const route = useRoute()
 const router = useRouter()
 const mounted = ref(false)
-
-// 从 localStorage 读取真实筛查结果，降级到 demo 数据
-const saved = (() => {
-  try { return JSON.parse(localStorage.getItem('xj_screening_result') || 'null') } catch { return null }
-})()
 
 // ─── Demo / fallback 数据 ────────────────────────────────────────────────────
 const DEMO = {
@@ -24,7 +20,12 @@ const DEMO = {
   answers: [1, 2, 1, 1, 0, 1, 1, 0, 0],
 }
 
-const raw = saved || DEMO
+// 先用 localStorage 数据（或 DEMO）填充，onMounted 里再从后端更新
+const localSaved = (() => {
+  try { return JSON.parse(localStorage.getItem('xj_screening_result') || 'null') } catch { return null }
+})()
+
+const raw = reactive({ ...(localSaved || DEMO) })
 
 // ─── PHQ-9 条目标签 ──────────────────────────────────────────────────────────
 const itemLabels = {
@@ -107,51 +108,51 @@ const voiceFeatures = [
   { label: '情感基调', value: '平静偏低落',       status: '注意' },
 ]
 
-// 个性化建议（基于量表类型）
-const suggestions = {
-  phq9: [
-    '保持规律作息，每天保证7小时以上睡眠',
-    '尝试轻度有氧运动，如散步或瑜伽，每周3次',
-    '每日进行5-10分钟正念冥想，有助于稳定情绪',
-    '与心镜数字陪伴进行日常情绪疏导对话',
-    '若症状持续两周以上，建议寻求专业心理咨询',
-  ],
-  sds: [
-    '记录每日情绪日记，觉察情绪变化规律',
-    '增加社交活动，与亲友保持联系',
-    '避免独处时间过长，适当走出舒适圈',
-    '尝试培养新的爱好或参与有意义的活动',
-    '建议与专业心理咨询师进行定期评估',
-  ],
-  ais: [
-    '建立固定的睡前仪式，如热水澡、轻音乐',
-    '保持规律的起床时间，即使周末也不要过度补觉',
-    '睡前1小时避免使用手机和电脑蓝光设备',
-    '尝试腹式呼吸或渐进式肌肉放松练习',
-    '如失眠持续影响日间功能，建议就医进行睡眠评估',
-  ],
-  pss: [
-    '识别主要压力来源，制定切实可行的应对方案',
-    '学习时间管理技巧，合理分配任务优先级',
-    '每天安排30分钟"放空时间"进行放松',
-    '与信任的人倾诉，分享压力和感受',
-    '考虑正念减压（MBSR）等专业压力管理课程',
-  ],
+// 个性化建议：优先用后端返回的干预建议，降级到本地备选
+const fallbackSuggestions = {
+  phq9: ['保持规律作息，每天保证7小时以上睡眠', '尝试轻度有氧运动，如散步或瑜伽，每周3次', '每日进行5-10分钟正念冥想，有助于稳定情绪', '与心镜数字陪伴进行日常情绪疏导对话', '若症状持续两周以上，建议寻求专业心理咨询'],
+  sds:  ['记录每日情绪日记，觉察情绪变化规律', '增加社交活动，与亲友保持联系', '避免独处时间过长，适当走出舒适圈', '尝试培养新的爱好或参与有意义的活动', '建议与专业心理咨询师进行定期评估'],
+  ais:  ['建立固定的睡前仪式，如热水澡、轻音乐', '保持规律的起床时间，即使周末也不要过度补觉', '睡前1小时避免使用手机和电脑蓝光设备', '尝试腹式呼吸或渐进式肌肉放松练习', '如失眠持续影响日间功能，建议就医进行睡眠评估'],
+  pss:  ['识别主要压力来源，制定切实可行的应对方案', '学习时间管理技巧，合理分配任务优先级', '每天安排30分钟"放空时间"进行放松', '与信任的人倾诉，分享压力和感受', '考虑正念减压（MBSR）等专业压力管理课程'],
 }
-
-const currentSuggestions = computed(() => suggestions[raw.type] || suggestions.phq9)
+const backendSuggestions = ref([])
+const currentSuggestions = computed(() =>
+  backendSuggestions.value.length > 0
+    ? backendSuggestions.value
+    : (fallbackSuggestions[raw.type] || fallbackSuggestions.phq9)
+)
 
 // SOS 安全检查
 const isSOS = computed(() => raw.type === 'phq9' && (raw.answers?.[8] ?? 0) > 0)
 
-onMounted(() => setTimeout(() => { mounted.value = true }, 300))
-
-const reportId = route.params.id || 'demo-001'
-const reportDate = raw.date || DEMO.date
+const reportId   = computed(() => route.params.id || 'local')
+const reportDate = computed(() => raw.date || DEMO.date)
 
 // 圆弧计算
 const CIRC = 251.3
 const arcDash = computed(() => `${(CIRC * raw.total / raw.max).toFixed(1)} ${CIRC}`)
+
+onMounted(async () => {
+  const id = route.params.id
+  if (id && !isNaN(id) && id !== 'local') {
+    try {
+      // 拉完整报告（含 session_id）
+      const report = await api.get(`/reports/${id}`)
+      Object.assign(raw, report.report_json)
+
+      // 再拉该会话的后端干预建议
+      try {
+        const recs = await api.get(`/reports/session/${report.session_id}/recommendations`)
+        if (recs?.length > 0) {
+          backendSuggestions.value = recs.map(r => r.content)
+        }
+      } catch (_) { /* 建议加载失败不阻断页面 */ }
+    } catch (e) {
+      console.error('拉取报告失败，使用本地数据:', e)
+    }
+  }
+  setTimeout(() => { mounted.value = true }, 300)
+})
 </script>
 
 <template>

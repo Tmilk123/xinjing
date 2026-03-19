@@ -9,13 +9,13 @@ const routes = [
     component: () => import('../layouts/MainLayout.vue'),
     children: [
       { path: '', name: 'Home', component: () => import('../pages/HomePage.vue') },
-      { path: 'screening', name: 'Screening', component: () => import('../pages/ScreeningPage.vue') },
+      { path: 'screening', name: 'Screening', component: () => import('../pages/ScreeningPage.vue'), meta: { requiresAuth: true } },
       { path: 'companion', name: 'Companion', component: () => import('../pages/CompanionPage.vue'), meta: { requiresAuth: true } },
       { path: 'mood-calendar', name: 'MoodCalendar', component: () => import('../pages/MoodCalendarPage.vue'), meta: { requiresAuth: true } },
       { path: 'analytics', name: 'Analytics', component: () => import('../pages/AnalyticsPage.vue'), meta: { requiresAuth: true } },
-      { path: 'about', name: 'About', component: () => import('../pages/AboutPage.vue') },
-      { path: 'assessment/:type', name: 'Assessment', component: () => import('../pages/AssessmentPage.vue') },
-      { path: 'report/:id', name: 'Report', component: () => import('../pages/ReportPage.vue') },
+      { path: 'about', name: 'About', component: () => import('../pages/AboutPage.vue'), meta: { requiresAuth: true } },
+      { path: 'assessment/:type', name: 'Assessment', component: () => import('../pages/AssessmentPage.vue'), meta: { requiresAuth: true } },
+      { path: 'report/:id', name: 'Report', component: () => import('../pages/ReportPage.vue'), meta: { requiresAuth: true } },
     ]
   }
 ]
@@ -28,13 +28,26 @@ const router = createRouter({
 
 // 导航守卫：未登录时跳转到登录页
 router.beforeEach((to) => {
-  if (!to.meta.requiresAuth) return true
-
   const saved = localStorage.getItem('xinjing_auth')
-  const token = saved ? JSON.parse(saved)?.token : null
-  if (token) return true
+  let parsed = null
+  try {
+    parsed = saved ? JSON.parse(saved) : null
+  } catch {
+    parsed = null
+  }
 
-  return { path: '/login', query: { redirect: to.fullPath } }
+  const userId = Number(parsed?.user?.id)
+  const hasValidAuth = !!parsed?.token && Number.isInteger(userId) && userId > 0
+
+  if (to.path === '/login' && hasValidAuth) {
+    return { path: '/' }
+  }
+
+  if (to.meta.requiresAuth && !hasValidAuth) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+
+  return true
 })
 
 export default router

@@ -1,5 +1,10 @@
 <script setup>
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
+import { useAuth } from '../composables/useAuth.js'
+import { api } from '../services/api.js'
+
+const { userId } = useAuth()
+const chatSessionId = ref(null)
 
 // ─── 聊天 ──────────────────────────────────────────────────
 const messages = ref([
@@ -31,17 +36,47 @@ async function sendMessage(text) {
   input.value = ''
   loading.value = true
   await nextTick(); scrollToBottom()
-  await new Promise(r => setTimeout(r, 1200))
-  const reply = botResponses[t] || '我听到了，谢谢你愿意分享。能多说一点吗？我想更了解你的感受。'
+
+  let replyText = null
+  if (chatSessionId.value) {
+    try {
+      const msgs = await api.post(`/chat/sessions/${chatSessionId.value}/messages`, { content: t })
+      // msgs 是完整消息列表，取最后一条 agent 回复
+      const lastAgent = [...msgs].reverse().find(m => m.sender_type === 'agent')
+      if (lastAgent) replyText = lastAgent.content
+    } catch (e) {
+      console.error('发送消息到后端失败，使用本地回复:', e)
+    }
+  }
+
+  if (!replyText) {
+    // 后端不可用时降级到本地关键词回复
+    await new Promise(r => setTimeout(r, 800))
+    replyText = botResponses[t] || '我听到了，谢谢你愿意分享。能多说一点吗？我想更了解你的感受。'
+  }
+
   messages.value.push({
-    role: 'assistant', text: reply,
+    role: 'assistant', text: replyText,
     time: new Date().toLocaleTimeString('zh', { hour: '2-digit', minute: '2-digit' }),
   })
   loading.value = false
   await nextTick(); scrollToBottom()
-  // 在回复后推荐今日任务
   showTask.value = true
 }
+
+onMounted(async () => {
+  if (userId.value) {
+    try {
+      const session = await api.post('/chat/sessions', {
+        user_id: userId.value,
+        session_topic: '日常陪伴',
+      })
+      chatSessionId.value = session.id
+    } catch (e) {
+      console.error('创建聊天会话失败，使用本地模式:', e)
+    }
+  }
+})
 
 function scrollToBottom() {
   if (chatRef.value) chatRef.value.scrollTop = chatRef.value.scrollHeight

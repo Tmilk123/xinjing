@@ -2,9 +2,60 @@
 import { ref, onMounted } from 'vue'
 import BgBlobs from '../components/BgBlobs.vue'
 import XjLogo from '../components/XjLogo.vue'
+import { useAuth } from '../composables/useAuth.js'
+import { api } from '../services/api.js'
 
 const visible = ref(false)
-onMounted(() => setTimeout(() => { visible.value = true }, 100))
+const { isLoggedIn, displayName, userId } = useAuth()
+
+// ── 个性化数据 ──────────────────────────────────────────
+const lastReport  = ref(null)   // { level, color, scale, date, id }
+const moodStreak  = ref(0)
+const todayMood   = ref(null)   // mood_key or null
+const alerts      = ref([])     // 未处理的紧急预警
+
+const MOOD_ICON = { sunny: '☀️', partly: '⛅', cloudy: '☁️', rainy: '🌧️', stormy: '⛈️' }
+
+function calcStreak(records) {
+  const today = new Date(); today.setHours(0,0,0,0)
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  const map = {}
+  records.forEach(r => { map[r.record_date] = r.mood_key })
+  let count = 0, d = new Date(today)
+  while (map[fmt(d)]) { count++; d.setDate(d.getDate()-1) }
+  return count
+}
+
+onMounted(async () => {
+  setTimeout(() => { visible.value = true }, 100)
+  if (!isLoggedIn.value || !userId.value) return
+  try {
+    const [reports, moodRecords, alertList] = await Promise.all([
+      api.get('/reports?limit=1'),
+      api.get(`/mood-calendar?user_id=${userId.value}`),
+      api.get('/reports/alerts').catch(() => []),
+    ])
+    if (alertList?.length) alerts.value = alertList.filter(a => !a.is_handled)
+    if (reports?.length > 0) {
+      const r = reports[0]
+      lastReport.value = {
+        id:    r.id,
+        level: r.report_json?.level,
+        color: r.report_json?.color || '#22c55e',
+        scale: r.report_json?.scale || '评估',
+        date:  (r.report_json?.date || r.created_at || '').slice(0, 10),
+      }
+    }
+    if (moodRecords?.length > 0) {
+      moodStreak.value = calcStreak(moodRecords)
+      const todayKey = new Date().toISOString().slice(0, 10)
+      const rec = moodRecords.find(r => r.record_date === todayKey)
+      if (rec) todayMood.value = rec.mood_key
+    }
+  } catch (e) {
+    console.error('首页个性化数据加载失败:', e)
+  }
+})
 
 const features = [
   {
@@ -289,6 +340,97 @@ const scenarios = [
       <svg viewBox="0 0 1440 60" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M0 60L60 50C120 40 240 20 360 15C480 10 600 20 720 25C840 30 960 30 1080 25C1200 20 1320 10 1380 5L1440 0V60H0Z" fill="white"/>
       </svg>
+    </div>
+  </section>
+
+  <!-- ====== 紧急预警横幅（有未处理警报时显示） ====== -->
+  <section v-if="isLoggedIn && alerts.length > 0" class="bg-red-50 border-b border-red-100">
+    <div class="max-w-7xl mx-auto px-6 py-4 space-y-3">
+      <div
+        v-for="alert in alerts"
+        :key="alert.id"
+        class="flex items-start gap-3 p-4 bg-white rounded-2xl border border-red-200 shadow-sm"
+      >
+        <div class="w-9 h-9 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+          <span class="text-lg">⚠️</span>
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-bold text-red-700">{{ alert.alert_title }}</p>
+          <p class="text-xs text-red-600 mt-0.5 leading-relaxed">{{ alert.alert_content }}</p>
+          <p class="text-[10px] text-red-400 mt-1">{{ alert.created_at?.slice(0, 10) }}</p>
+        </div>
+        <RouterLink
+          to="/companion"
+          class="text-xs font-medium text-red-600 border border-red-200 px-3 py-1.5 rounded-xl hover:bg-red-50 transition-colors no-underline flex-shrink-0 whitespace-nowrap"
+        >
+          寻求帮助
+        </RouterLink>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 个人概况（登录后显示） ====== -->
+  <section v-if="isLoggedIn" class="bg-white border-b border-gray-100">
+    <div class="max-w-7xl mx-auto px-6 py-5">
+      <div class="flex flex-wrap items-center gap-4">
+        <!-- 问候 -->
+        <div class="flex items-center gap-2.5 mr-2">
+          <div class="w-9 h-9 rounded-full bg-blue-green flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+            {{ displayName?.slice(0,1) || '我' }}
+          </div>
+          <div>
+            <p class="text-xs text-gray-400">欢迎回来</p>
+            <p class="text-sm font-bold text-gray-800">{{ displayName }}</p>
+          </div>
+        </div>
+
+        <div class="h-8 w-px bg-gray-200 hidden sm:block"></div>
+
+        <!-- 最近报告 -->
+        <RouterLink
+          v-if="lastReport"
+          :to="`/report/${lastReport.id}`"
+          class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors no-underline"
+        >
+          <span class="text-xs text-gray-400">最近评估</span>
+          <span class="text-xs font-bold px-2 py-0.5 rounded-full" :style="{ color: lastReport.color, backgroundColor: lastReport.color + '18' }">
+            {{ lastReport.level }}
+          </span>
+          <span class="text-xs text-gray-400">{{ lastReport.scale }} · {{ lastReport.date }}</span>
+          <svg class="w-3.5 h-3.5 text-gray-400 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+        </RouterLink>
+        <span v-else class="text-xs text-gray-400 px-3">暂无评估记录</span>
+
+        <div class="h-8 w-px bg-gray-200 hidden sm:block"></div>
+
+        <!-- 打卡连续 -->
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-50">
+          <span class="text-base">🔥</span>
+          <span class="text-xs font-bold text-amber-700">连续打卡 {{ moodStreak }} 天</span>
+        </div>
+
+        <!-- 今日情绪 -->
+        <div v-if="todayMood" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-50">
+          <span class="text-base">{{ MOOD_ICON[todayMood] }}</span>
+          <span class="text-xs font-medium text-sky-700">今天已打卡</span>
+        </div>
+        <RouterLink v-else to="/mood-calendar" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-dashed border-gray-300 hover:border-primary/50 transition-colors no-underline">
+          <span class="text-base">🌀</span>
+          <span class="text-xs text-gray-500">记录今日心情</span>
+        </RouterLink>
+
+        <!-- 快捷操作 -->
+        <div class="ml-auto flex gap-2">
+          <RouterLink to="/screening" class="text-xs font-medium text-white bg-primary px-3 py-1.5 rounded-lg hover:bg-primary/90 transition-colors no-underline">
+            开始筛测
+          </RouterLink>
+          <RouterLink to="/companion" class="text-xs font-medium text-primary border border-primary/30 px-3 py-1.5 rounded-lg hover:bg-primary/5 transition-colors no-underline">
+            情绪陪伴
+          </RouterLink>
+        </div>
+      </div>
     </div>
   </section>
 

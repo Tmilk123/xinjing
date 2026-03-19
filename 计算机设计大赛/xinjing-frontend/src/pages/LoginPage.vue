@@ -36,11 +36,9 @@ async function submit() {
     error.value = '两次密码不一致'; loading.value = false; return
   }
 
-  await new Promise(r => setTimeout(r, 500))
-
   const result = tab.value === 'login'
-    ? login(username.value.trim(), password.value)
-    : register({
+    ? await login(username.value.trim(), password.value)
+    : await register({
         username: username.value.trim(),
         password: password.value,
         nickname: nickname.value.trim(),
